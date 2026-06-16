@@ -5,15 +5,25 @@ import axios from "axios";
 import {
   Database, Send, Sun, Moon, Plug, PlugZap,
   ChevronDown, ChevronRight, Loader2, AlertCircle,
-  CheckCircle2, Table2, BarChart3, Copy, Check,
-  Sparkles, Clock, Rows3
+  CheckCircle2, Table2, Copy, Check,
+  Sparkles, Clock, Rows3, BarChart3, TableIcon
 } from "lucide-react";
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line,
+  Legend
+} from "recharts";
 
 // ------------------------------------------------------------------
 // Config
 // ------------------------------------------------------------------
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+const CHART_COLORS = [
+  "#3b82f6", "#22c55e", "#f59e0b", "#ef4444", "#8b5cf6",
+  "#ec4899", "#14b8a6", "#f97316", "#6366f1", "#84cc16",
+];
 
 // ------------------------------------------------------------------
 // Types
@@ -28,6 +38,8 @@ interface Message {
   sql?: string;
   rows?: number;
   ms?: number;
+  columns?: string[];
+  data?: any[][];
   error?: string;
   clarification?: {
     clarification_message: string;
@@ -51,8 +63,251 @@ function generateId() {
   return Math.random().toString(36).slice(2);
 }
 
-function formatTime(iso: string) {
-  return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+// ------------------------------------------------------------------
+// Chart detection logic
+// ------------------------------------------------------------------
+
+function detectChartType(columns: string[], rows: any[][]): {
+  type: "bar" | "pie" | "line" | "table" | "none";
+  labelCol: number;
+  valueCol: number;
+} {
+  if (!columns || !rows || rows.length <= 1 || columns.length < 2) {
+    return { type: "none", labelCol: 0, valueCol: 1 };
+  }
+
+  // Find first string column (label) and first numeric column (value)
+  let labelCol = -1;
+  let valueCol = -1;
+
+  for (let i = 0; i < columns.length; i++) {
+    const sampleVal = rows[0][i];
+    if (labelCol === -1 && typeof sampleVal === "string") {
+      labelCol = i;
+    }
+    if (valueCol === -1 && typeof sampleVal === "number") {
+      valueCol = i;
+    }
+  }
+
+  // Fallback: first column is label, second is value
+  if (labelCol === -1) labelCol = 0;
+  if (valueCol === -1) valueCol = columns.length > 1 ? 1 : 0;
+
+  // Detect chart type based on data shape
+  if (rows.length <= 6) {
+    return { type: "pie", labelCol, valueCol };
+  }
+
+  // Check if label column looks like dates/months
+  const firstLabel = String(rows[0][labelCol]).toLowerCase();
+  const isTimeSeries = /^\d{4}|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|\d{1,2}\//.test(firstLabel);
+
+  if (isTimeSeries) {
+    return { type: "line", labelCol, valueCol };
+  }
+
+  return { type: "bar", labelCol, valueCol };
+}
+
+function prepareChartData(columns: string[], rows: any[][], labelCol: number, valueCol: number) {
+  return rows.map((row) => ({
+    name: String(row[labelCol]),
+    value: Number(row[valueCol]) || 0,
+  }));
+}
+
+// ------------------------------------------------------------------
+// ResultChart component
+// ------------------------------------------------------------------
+
+function ResultChart({ columns, rows }: { columns: string[]; rows: any[][] }) {
+  const [view, setView] = useState<"chart" | "table">("chart");
+  const { type, labelCol, valueCol } = detectChartType(columns, rows);
+
+  if (type === "none") return null;
+
+  const chartData = prepareChartData(columns, rows, labelCol, valueCol);
+  const valueName = columns[valueCol] || "value";
+
+  return (
+    <div style={{ marginTop: "16px" }}>
+      {/* Toggle */}
+      <div style={{
+        display: "flex", gap: "4px", marginBottom: "12px",
+      }}>
+        <button
+          onClick={() => setView("chart")}
+          style={{
+            background: view === "chart" ? "var(--accent)" : "var(--bg-tertiary)",
+            color: view === "chart" ? "#fff" : "var(--text-muted)",
+            border: "none", borderRadius: "6px",
+            padding: "4px 10px", fontSize: "12px",
+            cursor: "pointer",
+            display: "flex", alignItems: "center", gap: "4px",
+          }}
+        >
+          <BarChart3 size={12} /> Chart
+        </button>
+        <button
+          onClick={() => setView("table")}
+          style={{
+            background: view === "table" ? "var(--accent)" : "var(--bg-tertiary)",
+            color: view === "table" ? "#fff" : "var(--text-muted)",
+            border: "none", borderRadius: "6px",
+            padding: "4px 10px", fontSize: "12px",
+            cursor: "pointer",
+            display: "flex", alignItems: "center", gap: "4px",
+          }}
+        >
+          <TableIcon size={12} /> Table
+        </button>
+      </div>
+
+      {/* Chart view */}
+      {view === "chart" && (
+        <div style={{
+          background: "var(--bg-tertiary)",
+          borderRadius: "var(--radius)",
+          padding: "16px",
+          border: "1px solid var(--border)",
+        }}>
+          <ResponsiveContainer width="100%" height={280}>
+            {type === "bar" ? (
+              <BarChart data={chartData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                <XAxis
+                  dataKey="name"
+                  tick={{ fontSize: 11, fill: "var(--text-muted)" }}
+                  angle={-30}
+                  textAnchor="end"
+                  height={60}
+                />
+                <YAxis tick={{ fontSize: 11, fill: "var(--text-muted)" }} />
+                <Tooltip
+                  contentStyle={{
+                    background: "var(--bg-secondary)",
+                    border: "1px solid var(--border)",
+                    borderRadius: "8px",
+                    fontSize: "13px",
+                  }}
+                />
+                <Bar dataKey="value" name={valueName} radius={[4, 4, 0, 0]}>
+                  {chartData.map((_, i) => (
+                    <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
+                  ))}
+                </Bar>
+              </BarChart>
+            ) : type === "pie" ? (
+              <PieChart>
+                <Pie
+                  data={chartData}
+                  cx="50%"
+                  cy="50%"
+                  outerRadius={100}
+                  dataKey="value"
+                  nameKey="name"
+                  label={({ name, percent }) =>
+                    `${name} (${(percent * 100).toFixed(0)}%)`
+                  }
+                  labelLine={{ stroke: "var(--text-muted)" }}
+                >
+                  {chartData.map((_, i) => (
+                    <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
+                  ))}
+                </Pie>
+                <Tooltip
+                  contentStyle={{
+                    background: "var(--bg-secondary)",
+                    border: "1px solid var(--border)",
+                    borderRadius: "8px",
+                    fontSize: "13px",
+                  }}
+                />
+              </PieChart>
+            ) : (
+              <LineChart data={chartData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                <XAxis
+                  dataKey="name"
+                  tick={{ fontSize: 11, fill: "var(--text-muted)" }}
+                  angle={-30}
+                  textAnchor="end"
+                  height={60}
+                />
+                <YAxis tick={{ fontSize: 11, fill: "var(--text-muted)" }} />
+                <Tooltip
+                  contentStyle={{
+                    background: "var(--bg-secondary)",
+                    border: "1px solid var(--border)",
+                    borderRadius: "8px",
+                    fontSize: "13px",
+                  }}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="value"
+                  name={valueName}
+                  stroke="#3b82f6"
+                  strokeWidth={2}
+                  dot={{ r: 4, fill: "#3b82f6" }}
+                />
+              </LineChart>
+            )}
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* Table view */}
+      {view === "table" && (
+        <div style={{
+          overflowX: "auto",
+          border: "1px solid var(--border)",
+          borderRadius: "var(--radius)",
+        }}>
+          <table style={{
+            width: "100%", borderCollapse: "collapse",
+            fontSize: "13px",
+          }}>
+            <thead>
+              <tr>
+                {columns.map((col) => (
+                  <th key={col} style={{
+                    padding: "8px 12px",
+                    textAlign: "left",
+                    background: "var(--bg-tertiary)",
+                    borderBottom: "1px solid var(--border)",
+                    color: "var(--text-secondary)",
+                    fontWeight: 600,
+                    fontSize: "11px",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.06em",
+                  }}>
+                    {col}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, i) => (
+                <tr key={i}>
+                  {row.map((val: any, j: number) => (
+                    <td key={j} style={{
+                      padding: "8px 12px",
+                      borderBottom: "1px solid var(--border)",
+                      color: "var(--text-primary)",
+                    }}>
+                      {typeof val === "number" ? val.toLocaleString() : String(val)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ------------------------------------------------------------------
@@ -243,12 +498,17 @@ function MessageBubble({ msg, onOptionClick }: {
         </div>
       )}
 
+      {/* Chart / Table */}
+      {msg.columns && msg.data && msg.data.length > 1 && (
+        <ResultChart columns={msg.columns} rows={msg.data} />
+      )}
+
       {/* Metadata */}
       {msg.rows !== undefined && <MetaRow rows={msg.rows} ms={msg.ms || 0} />}
 
       {/* SQL toggle */}
       {msg.sql && (
-        <div style={{ marginTop: "12px", paddingLeft: "0" }}>
+        <div style={{ marginTop: "12px" }}>
           <button
             onClick={() => setShowSql(!showSql)}
             style={{
@@ -406,7 +666,7 @@ function ExampleQuestions({ onSelect }: { onSelect: (q: string) => void }) {
     "How many orders do we have in total?",
     "Who are the top 5 customers by revenue?",
     "What is the total revenue by product category?",
-    "How many orders were placed in 2024?",
+    "How many orders were placed each month in 2024?",
     "Which products have never been ordered?",
     "What percentage of orders were cancelled?",
   ];
@@ -521,6 +781,8 @@ export default function Home() {
           sql: data.sql,
           rows: data.row_count,
           ms: data.execution_ms,
+          columns: data.columns || [],
+          data: data.rows || [],
           timestamp: new Date().toISOString(),
         }]);
       }
