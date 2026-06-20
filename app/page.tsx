@@ -6,7 +6,7 @@ import {
   Database, Send, Sun, Moon, Plug, PlugZap,
   ChevronDown, ChevronRight, Loader2, AlertCircle,
   CheckCircle2, Table2, Copy, Check,
-  Sparkles, Clock, Rows3, BarChart3, TableIcon
+  Sparkles, Clock, Rows3, BarChart3, TableIcon, Upload
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -44,6 +44,25 @@ interface ConnectionState {
   db_type?: string;
   table_count?: number;
 }
+
+// ── localStorage helpers ──────────────────────────────────────────
+
+function loadFromStorage<T>(key: string, fallback: T): T {
+  if (typeof window === "undefined") return fallback;
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function saveToStorage(key: string, value: unknown) {
+  if (typeof window === "undefined") return;
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch { }
+}
+
+// ─────────────────────────────────────────────────────────────────
 
 function generateId() {
   return Math.random().toString(36).slice(2);
@@ -330,18 +349,31 @@ function MessageBubble({ msg, onOptionClick }: { msg: Message; onOptionClick: (q
   );
 }
 
-function ConnectPanel({ onConnect, connection }: { onConnect: (cs: string) => Promise<void>; connection: ConnectionState }) {
+// ── ConnectPanel — supports both connection string AND sqlite file upload ──
+
+function ConnectPanel({
+  onConnect,
+  onFileConnect,
+  onDisconnect,
+  connection,
+}: {
+  onConnect: (cs: string) => Promise<void>;
+  onFileConnect: (file: File) => Promise<void>;
+  onDisconnect: () => void;
+  connection: ConnectionState;
+}) {
   const [cs, setCs] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [dragOver, setDragOver] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   const examples = [
-    { label: "SQLite demo", value: "sqlite:///db/dev.db" },
     { label: "PostgreSQL", value: "postgresql://user:pass@host:5432/dbname" },
     { label: "MySQL", value: "mysql+pymysql://user:pass@host:3306/dbname" },
   ];
 
-  const submit = async () => {
+  const submitCs = async () => {
     if (!cs.trim()) return;
     setLoading(true); setError("");
     try { await onConnect(cs.trim()); }
@@ -349,38 +381,131 @@ function ConnectPanel({ onConnect, connection }: { onConnect: (cs: string) => Pr
     finally { setLoading(false); }
   };
 
+  const handleFile = async (file: File) => {
+    if (!file.name.endsWith(".db") && !file.name.endsWith(".sqlite")) {
+      setError("File must be a .db or .sqlite file");
+      return;
+    }
+    setLoading(true); setError("");
+    try { await onFileConnect(file); }
+    catch (e: any) { setError(e.message || "Upload failed"); }
+    finally { setLoading(false); }
+  };
+
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault(); setDragOver(false);
+    const file = e.dataTransfer.files[0];
+    if (file) handleFile(file);
+  };
+
+  if (connection.connected) {
+    return (
+      <div style={{ padding: "20px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px" }}>
+          <Database size={16} color="var(--accent)" />
+          <span style={{ fontWeight: 600, fontSize: "14px" }}>Connect a database</span>
+        </div>
+        <div style={{ background: "var(--success-subtle)", border: "1px solid var(--success)", borderRadius: "var(--radius-sm)", padding: "10px 12px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <CheckCircle2 size={14} color="var(--success)" />
+            <span style={{ fontSize: "13px", color: "var(--success)" }}>
+              {connection.db_type} — {connection.table_count} table{connection.table_count !== 1 ? "s" : ""}
+            </span>
+          </div>
+          <button
+            onClick={onDisconnect}
+            style={{ background: "none", border: "none", cursor: "pointer", fontSize: "11px", color: "var(--text-muted)", textDecoration: "underline" }}
+          >
+            disconnect
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ padding: "20px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "16px" }}>
         <Database size={16} color="var(--accent)" />
         <span style={{ fontWeight: 600, fontSize: "14px" }}>Connect a database</span>
       </div>
-      {connection.connected ? (
-        <div style={{ background: "var(--success-subtle)", border: "1px solid var(--success)", borderRadius: "var(--radius-sm)", padding: "10px 12px", display: "flex", alignItems: "center", gap: "8px" }}>
-          <CheckCircle2 size={14} color="var(--success)" />
-          <span style={{ fontSize: "13px", color: "var(--success)" }}>{connection.db_type} — {connection.table_count} tables</span>
-        </div>
-      ) : (
-        <>
-          <textarea value={cs} onChange={(e) => setCs(e.target.value)} placeholder="postgresql://user:pass@host:5432/dbname" rows={2}
-            style={{ width: "100%", background: "var(--bg-tertiary)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "10px 12px", fontSize: "12px", fontFamily: "monospace", color: "var(--text-primary)", resize: "none", outline: "none", marginBottom: "10px" }} />
-          {error && <p style={{ fontSize: "12px", color: "var(--error)", marginBottom: "8px" }}>{error}</p>}
-          <button onClick={submit} disabled={loading || !cs.trim()}
-            style={{ width: "100%", background: "var(--accent)", color: "#fff", border: "none", borderRadius: "var(--radius-sm)", padding: "8px", fontSize: "13px", fontWeight: 600, cursor: loading ? "not-allowed" : "pointer", opacity: loading || !cs.trim() ? 0.6 : 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "6px", marginBottom: "12px" }}>
-            {loading ? <Loader2 size={14} /> : <Plug size={14} />}
-            {loading ? "Connecting..." : "Connect"}
+
+      {/* SQLite file drop zone */}
+      <div
+        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={onDrop}
+        onClick={() => fileRef.current?.click()}
+        style={{
+          border: `2px dashed ${dragOver ? "var(--accent)" : "var(--border)"}`,
+          borderRadius: "var(--radius-sm)",
+          padding: "14px 12px",
+          textAlign: "center",
+          cursor: "pointer",
+          background: dragOver ? "var(--bg-tertiary)" : "transparent",
+          marginBottom: "12px",
+          transition: "all 0.15s",
+        }}
+      >
+        <Upload size={16} color="var(--accent)" style={{ margin: "0 auto 6px" }} />
+        <p style={{ fontSize: "12px", color: "var(--text-secondary)", margin: 0 }}>
+          Drop a <strong>.db</strong> or <strong>.sqlite</strong> file here
+        </p>
+        <p style={{ fontSize: "11px", color: "var(--text-muted)", margin: "2px 0 0" }}>or click to browse</p>
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".db,.sqlite"
+          style={{ display: "none" }}
+          onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); }}
+        />
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px" }}>
+        <div style={{ flex: 1, height: "1px", background: "var(--border)" }} />
+        <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>or connection string</span>
+        <div style={{ flex: 1, height: "1px", background: "var(--border)" }} />
+      </div>
+
+      <textarea
+        value={cs}
+        onChange={(e) => setCs(e.target.value)}
+        placeholder="postgresql://user:pass@host:5432/dbname"
+        rows={2}
+        style={{
+          width: "100%", background: "var(--bg-tertiary)", border: "1px solid var(--border)",
+          borderRadius: "var(--radius-sm)", padding: "10px 12px", fontSize: "12px",
+          fontFamily: "monospace", color: "var(--text-primary)", resize: "none",
+          outline: "none", marginBottom: "10px", boxSizing: "border-box",
+        }}
+      />
+
+      {error && <p style={{ fontSize: "12px", color: "var(--error)", marginBottom: "8px" }}>{error}</p>}
+
+      <button
+        onClick={submitCs}
+        disabled={loading || !cs.trim()}
+        style={{
+          width: "100%", background: "var(--accent)", color: "#fff", border: "none",
+          borderRadius: "var(--radius-sm)", padding: "8px", fontSize: "13px", fontWeight: 600,
+          cursor: loading || !cs.trim() ? "not-allowed" : "pointer",
+          opacity: loading || !cs.trim() ? 0.6 : 1,
+          display: "flex", alignItems: "center", justifyContent: "center", gap: "6px", marginBottom: "12px",
+        }}
+      >
+        {loading ? <Loader2 size={14} /> : <Plug size={14} />}
+        {loading ? "Connecting..." : "Connect"}
+      </button>
+
+      <div>
+        <p style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "6px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em" }}>Examples</p>
+        {examples.map((ex) => (
+          <button key={ex.label} onClick={() => setCs(ex.value)}
+            style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: "none", cursor: "pointer", padding: "4px 0", fontSize: "12px", color: "var(--accent)" }}>
+            {ex.label}
           </button>
-          <div>
-            <p style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "6px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em" }}>Examples</p>
-            {examples.map((ex) => (
-              <button key={ex.label} onClick={() => setCs(ex.value)}
-                style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: "none", cursor: "pointer", padding: "4px 0", fontSize: "12px", color: "var(--accent)" }}>
-                {ex.label}
-              </button>
-            ))}
-          </div>
-        </>
-      )}
+        ))}
+      </div>
     </div>
   );
 }
@@ -407,15 +532,28 @@ function ExampleQuestions({ onSelect }: { onSelect: (q: string) => void }) {
   );
 }
 
+// ── Main page ─────────────────────────────────────────────────────
+
 export default function Home() {
-  const [dark, setDark] = useState(false);
+  // localStorage-backed state — survives refresh
+  const [dark, setDark] = useState<boolean>(() => loadFromStorage("llm_sql_dark", false));
+  const [connection, setConnection] = useState<ConnectionState>(() =>
+    loadFromStorage("llm_sql_connection", { connected: false })
+  );
+  const [sessionId] = useState<string>(() => {
+    const saved = loadFromStorage<string>("llm_sql_session", "");
+    if (saved) return saved;
+    const id = generateId();
+    saveToStorage("llm_sql_session", id);
+    return id;
+  });
+
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [connection, setConnection] = useState<ConnectionState>({ connected: false });
-  const [sessionId] = useState(() => generateId());
   const bottomRef = useRef<HTMLDivElement>(null);
 
+  // Sync dark mode to DOM and localStorage
   useEffect(() => {
     if (dark) {
       document.documentElement.classList.add("dark");
@@ -424,13 +562,52 @@ export default function Home() {
       document.documentElement.classList.remove("dark");
       document.documentElement.setAttribute("data-theme", "light");
     }
+    saveToStorage("llm_sql_dark", dark);
   }, [dark]);
+
+  // Persist connection state to localStorage whenever it changes
+  useEffect(() => {
+    saveToStorage("llm_sql_connection", connection);
+  }, [connection]);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
+  // Connect via connection string (PostgreSQL / MySQL / SQLite path)
   const handleConnect = async (cs: string) => {
-    const res = await axios.post(API_URL + "/connect", { connection_string: cs, session_id: sessionId });
-    setConnection({ connected: true, db_type: res.data.db_type, table_count: res.data.table_count });
+    const res = await axios.post(API_URL + "/connect", {
+      connection_string: cs,
+      session_id: sessionId,
+    });
+    setConnection({
+      connected: true,
+      db_type: res.data.db_type,
+      table_count: res.data.table_count,
+    });
+  };
+
+  // Connect via SQLite file upload
+  const handleFileConnect = async (file: File) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("session_id", sessionId);
+
+    const res = await axios.post(API_URL + "/connect/sqlite-upload", formData, {
+      headers: { "Content-Type": "multipart/form-data" },
+    });
+
+    setConnection({
+      connected: true,
+      db_type: "sqlite",
+      table_count: res.data.table_count,
+    });
+  };
+
+  // Disconnect
+  const handleDisconnect = async () => {
+    try {
+      await axios.post(`${API_URL}/disconnect/${sessionId}`);
+    } catch { }
+    setConnection({ connected: false });
   };
 
   const sendMessage = async (question: string) => {
@@ -439,7 +616,11 @@ export default function Home() {
     setInput("");
     setLoading(true);
     try {
-      const res = await axios.post(API_URL + "/query", { question, user_id: "default_user", session_id: sessionId });
+      const res = await axios.post(API_URL + "/query", {
+        question,
+        user_id: "default_user",
+        session_id: sessionId,
+      });
       const data = res.data;
       if (data.needs_clarification) {
         setMessages((prev) => [...prev, { id: generateId(), type: "clarification", question, clarification: data.clarification, timestamp: new Date().toISOString() }]);
@@ -465,6 +646,7 @@ export default function Home() {
 
   return (
     <div style={{ display: "flex", height: "100vh", background: "var(--bg-primary)", overflow: "hidden" }}>
+      {/* Sidebar */}
       <div style={{ width: "280px", flexShrink: 0, borderRight: "1px solid var(--border)", background: "var(--bg-secondary)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
         <div style={{ padding: "20px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: "10px" }}>
           <div style={{ width: 32, height: 32, background: "var(--accent)", borderRadius: "8px", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -476,7 +658,12 @@ export default function Home() {
           </div>
         </div>
         <div style={{ borderBottom: "1px solid var(--border)" }}>
-          <ConnectPanel onConnect={handleConnect} connection={connection} />
+          <ConnectPanel
+            onConnect={handleConnect}
+            onFileConnect={handleFileConnect}
+            onDisconnect={handleDisconnect}
+            connection={connection}
+          />
         </div>
         <div style={{ flex: 1, overflowY: "auto" }}>
           <ExampleQuestions onSelect={(q) => { setInput(q); sendMessage(q); }} />
@@ -486,12 +673,15 @@ export default function Home() {
         </div>
       </div>
 
+      {/* Main chat area */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         <div style={{ padding: "16px 24px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between", background: "var(--bg-primary)" }}>
           <div>
             <h1 style={{ fontSize: "16px", fontWeight: 600 }}>Chat</h1>
             <p style={{ fontSize: "12px", color: "var(--text-muted)" }}>
-              {connection.connected ? "Connected to " + connection.db_type + " — " + connection.table_count + " tables" : "Using demo database (Northwind)"}
+              {connection.connected
+                ? `Connected to ${connection.db_type} — ${connection.table_count} tables`
+                : "Using demo database (Northwind)"}
             </p>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
@@ -527,11 +717,19 @@ export default function Home() {
 
         <div style={{ padding: "16px 24px", borderTop: "1px solid var(--border)", background: "var(--bg-primary)" }}>
           <div style={{ display: "flex", gap: "10px", background: "var(--bg-secondary)", border: "1px solid var(--border)", borderRadius: "12px", padding: "10px 14px", alignItems: "flex-end" }}>
-            <textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={handleKeyDown}
-              placeholder="Ask a question about your data..." rows={1}
-              style={{ flex: 1, background: "none", border: "none", outline: "none", resize: "none", fontSize: "14px", color: "var(--text-primary)", lineHeight: 1.5, fontFamily: "inherit", maxHeight: "120px", overflowY: "auto" }} />
-            <button onClick={() => sendMessage(input)} disabled={!input.trim() || loading}
-              style={{ background: "var(--accent)", color: "#fff", border: "none", borderRadius: "8px", padding: "6px 10px", cursor: !input.trim() || loading ? "not-allowed" : "pointer", opacity: !input.trim() || loading ? 0.5 : 1, display: "flex", alignItems: "center", flexShrink: 0 }}>
+            <textarea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="Ask a question about your data..."
+              rows={1}
+              style={{ flex: 1, background: "none", border: "none", outline: "none", resize: "none", fontSize: "14px", color: "var(--text-primary)", lineHeight: 1.5, fontFamily: "inherit", maxHeight: "120px", overflowY: "auto" }}
+            />
+            <button
+              onClick={() => sendMessage(input)}
+              disabled={!input.trim() || loading}
+              style={{ background: "var(--accent)", color: "#fff", border: "none", borderRadius: "8px", padding: "6px 10px", cursor: !input.trim() || loading ? "not-allowed" : "pointer", opacity: !input.trim() || loading ? 0.5 : 1, display: "flex", alignItems: "center", flexShrink: 0 }}
+            >
               <Send size={14} />
             </button>
           </div>
