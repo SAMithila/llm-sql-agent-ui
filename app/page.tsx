@@ -553,6 +553,22 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
+  // On mount: verify saved session is still alive on backend
+  useEffect(() => {
+    if (!connection.connected) return;
+    axios.get(`${API_URL}/connection/${sessionId}`)
+      .then((res) => {
+        if (!res.data.connected) {
+          // Backend lost the session (redeploy / cold start)
+          setConnection({ connected: false });
+        }
+      })
+      .catch(() => {
+        setConnection({ connected: false });
+      });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+
   // Sync dark mode to DOM and localStorage
   useEffect(() => {
     if (dark) {
