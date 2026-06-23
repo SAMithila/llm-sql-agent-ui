@@ -535,41 +535,38 @@ function ExampleQuestions({ onSelect }: { onSelect: (q: string) => void }) {
 // ── Main page ─────────────────────────────────────────────────────
 
 export default function Home() {
-  // localStorage-backed state — survives refresh
-  const [dark, setDark] = useState<boolean>(() => loadFromStorage("llm_sql_dark", false));
-  const [connection, setConnection] = useState<ConnectionState>(() =>
-    loadFromStorage("llm_sql_connection", { connected: false })
-  );
-  const [sessionId] = useState<string>(() => {
-    const saved = loadFromStorage<string>("llm_sql_session", "");
-    if (saved) return saved;
-    const id = generateId();
-    saveToStorage("llm_sql_session", id);
-    return id;
-  });
-
+  // ALL useState hooks first — no exceptions
+  const [dark, setDark] = useState<boolean>(false);
+  const [connection, setConnection] = useState<ConnectionState>({ connected: false });
+  const [sessionId, setSessionId] = useState<string>("");
+  const [hydrated, setHydrated] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  // On mount: verify saved session is still alive on backend
+  // ALL useEffect hooks next
   useEffect(() => {
-    if (!connection.connected) return;
+    const savedDark = loadFromStorage("llm_sql_dark", false);
+    const savedConn = loadFromStorage<ConnectionState>("llm_sql_connection", { connected: false });
+    let savedSession = loadFromStorage<string>("llm_sql_session", "");
+    if (!savedSession) {
+      savedSession = generateId();
+      saveToStorage("llm_sql_session", savedSession);
+    }
+    setDark(savedDark);
+    setConnection(savedConn);
+    setSessionId(savedSession);
+    setHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated || !connection.connected || !sessionId) return;
     axios.get(`${API_URL}/connection/${sessionId}`)
-      .then((res) => {
-        if (!res.data.connected) {
-          // Backend lost the session (redeploy / cold start)
-          setConnection({ connected: false });
-        }
-      })
-      .catch(() => {
-        setConnection({ connected: false });
-      });
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+      .then((res) => { if (!res.data.connected) setConnection({ connected: false }); })
+      .catch(() => setConnection({ connected: false }));
+  }, [hydrated]); // eslint-disable-line react-hooks/exhaustive-deps
 
-
-  // Sync dark mode to DOM and localStorage
   useEffect(() => {
     if (dark) {
       document.documentElement.classList.add("dark");
@@ -581,12 +578,14 @@ export default function Home() {
     saveToStorage("llm_sql_dark", dark);
   }, [dark]);
 
-  // Persist connection state to localStorage whenever it changes
   useEffect(() => {
     saveToStorage("llm_sql_connection", connection);
   }, [connection]);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+
+  // Conditional return AFTER all hooks
+  if (!hydrated) return null;
 
   // Connect via connection string (PostgreSQL / MySQL / SQLite path)
   const handleConnect = async (cs: string) => {
@@ -607,9 +606,8 @@ export default function Home() {
     formData.append("file", file);
     formData.append("session_id", sessionId);
 
-    const res = await axios.post(API_URL + "/connect/sqlite-upload", formData, {
-      headers: { "Content-Type": "multipart/form-data" },
-    });
+    const res = await axios.post(API_URL + "/connect/sqlite-upload", formData);
+
 
     setConnection({
       connected: true,
