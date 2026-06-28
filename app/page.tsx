@@ -600,14 +600,26 @@ export default function Home() {
     });
   };
 
-  // Connect via SQLite file upload
+  // Connect via GCS upload of SQLite file (bypasses Cloud Run size limit)
   const handleFileConnect = async (file: File) => {
-    const formData = new FormData();
-    formData.append("file", file);
-    formData.append("session_id", sessionId);
+    // Step 1: get signed URL
+    const { data } = await axios.get(`${API_URL}/upload/get-signed-url`, {
+      params: { session_id: sessionId }
+    });
 
-    const res = await axios.post(API_URL + "/connect/sqlite-upload", formData);
+    // Step 2: upload directly to GCS (no Cloud Run size limit)
+    await axios.put(data.upload_url, file, {
+      headers: { "Content-Type": "application/octet-stream" },
+      onUploadProgress: (e) => {
+        const pct = Math.round((e.loaded / (e.total || 1)) * 100);
+        console.log(`Uploading: ${pct}%`);
+      }
+    });
 
+    // Step 3: tell backend to connect
+    const res = await axios.post(`${API_URL}/upload/connect-from-gcs`, null, {
+      params: { blob_path: data.blob_path, session_id: sessionId }
+    });
 
     setConnection({
       connected: true,
