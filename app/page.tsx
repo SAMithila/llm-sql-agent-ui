@@ -6,7 +6,8 @@ import {
   Database, Send, Sun, Moon, Plug, PlugZap,
   ChevronDown, ChevronRight, Loader2, AlertCircle,
   CheckCircle2, Table2, Copy, Check,
-  Sparkles, Clock, Rows3, BarChart3, TableIcon, Upload
+  Sparkles, Clock, Rows3, BarChart3, TableIcon, Upload,
+  FileText, GitMerge
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -20,6 +21,13 @@ const CHART_COLORS = [
   "#ec4899", "#14b8a6", "#f97316", "#6366f1", "#84cc16",
 ];
 
+interface Source {
+  title: string;
+  source: string;
+  publisher: string;
+  year: number;
+}
+
 interface Message {
   id: string;
   type: "user" | "answer" | "error" | "clarification";
@@ -32,6 +40,8 @@ interface Message {
   columns?: string[];
   data?: any[][];
   error?: string;
+  route?: string;
+  sources?: Source[];
   clarification?: {
     clarification_message: string;
     questions: { question: string; options: string[] }[];
@@ -45,16 +55,12 @@ interface ConnectionState {
   table_count?: number;
 }
 
-// ── localStorage helpers ──────────────────────────────────────────
-
 function loadFromStorage<T>(key: string, fallback: T): T {
   if (typeof window === "undefined") return fallback;
   try {
     const raw = localStorage.getItem(key);
     return raw ? (JSON.parse(raw) as T) : fallback;
-  } catch {
-    return fallback;
-  }
+  } catch { return fallback; }
 }
 
 function saveToStorage(key: string, value: unknown) {
@@ -62,96 +68,101 @@ function saveToStorage(key: string, value: unknown) {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch { }
 }
 
-// ─────────────────────────────────────────────────────────────────
+function generateId() { return Math.random().toString(36).slice(2); }
 
-function generateId() {
-  return Math.random().toString(36).slice(2);
+// ── Route badge ───────────────────────────────────────────────────
+
+function RouteBadge({ route }: { route?: string }) {
+  if (!route) return null;
+  const config = {
+    SQL: { label: "SQL", bg: "#dbeafe", color: "#1d4ed8", icon: "🗄️" },
+    RAG: { label: "Document", bg: "#fef3c7", color: "#92400e", icon: "📄" },
+    BOTH: { label: "SQL + Doc", bg: "#ede9fe", color: "#5b21b6", icon: "🔀" },
+  };
+  const c = config[route as keyof typeof config];
+  if (!c) return null;
+  return (
+    <span style={{
+      display: "inline-flex", alignItems: "center", gap: "4px",
+      background: c.bg, color: c.color,
+      borderRadius: "12px", padding: "2px 8px",
+      fontSize: "11px", fontWeight: 600,
+    }}>
+      {c.icon} {c.label}
+    </span>
+  );
 }
 
+// ── Source citations ──────────────────────────────────────────────
+
+function SourceCitations({ sources }: { sources?: Source[] }) {
+  if (!sources || sources.length === 0) return null;
+  return (
+    <div style={{ marginTop: "12px", paddingLeft: "26px" }}>
+      <p style={{ fontSize: "11px", color: "var(--text-muted)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: "6px" }}>
+        Sources
+      </p>
+      {sources.map((s, i) => (
+        <div key={i} style={{
+          display: "flex", alignItems: "center", gap: "6px",
+          fontSize: "12px", color: "var(--text-secondary)", marginBottom: "4px",
+        }}>
+          <FileText size={11} color="var(--text-muted)" />
+          <span>{s.title} — {s.publisher}, {s.year}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Chart ─────────────────────────────────────────────────────────
+
 function detectChartType(columns: string[], rows: any[][]): {
-  type: "bar" | "pie" | "line" | "none";
-  labelCol: number;
-  valueCol: number;
+  type: "bar" | "pie" | "line" | "none"; labelCol: number; valueCol: number;
 } {
-  if (!columns || !rows || rows.length < 2 || columns.length < 2) {
+  if (!columns || !rows || rows.length < 2 || columns.length < 2)
     return { type: "none", labelCol: 0, valueCol: 1 };
-  }
 
-  let labelCol = -1;
-  let valueCol = -1;
-
+  let labelCol = -1, valueCol = -1;
   for (let i = 0; i < columns.length; i++) {
-    const sampleVal = rows[0][i];
-    if (labelCol === -1 && typeof sampleVal === "string") labelCol = i;
-    if (valueCol === -1 && typeof sampleVal === "number") valueCol = i;
+    const v = rows[0][i];
+    if (labelCol === -1 && typeof v === "string") labelCol = i;
+    if (valueCol === -1 && typeof v === "number") valueCol = i;
   }
-
   if (labelCol === -1) labelCol = 0;
   if (valueCol === -1) valueCol = columns.length > 1 ? 1 : 0;
 
   if (rows.length <= 6) return { type: "pie", labelCol, valueCol };
-
   const firstLabel = String(rows[0][labelCol]).toLowerCase();
   const isTimeSeries = /^\d{4}|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec/.test(firstLabel);
-  if (isTimeSeries) return { type: "line", labelCol, valueCol };
-
-  return { type: "bar", labelCol, valueCol };
+  return { type: isTimeSeries ? "line" : "bar", labelCol, valueCol };
 }
 
 function ResultChart({ columns, rows }: { columns: string[]; rows: any[][] }) {
   const [view, setView] = useState<"chart" | "table">("chart");
   const { type, labelCol, valueCol } = detectChartType(columns, rows);
-
   if (type === "none") return null;
 
-  const chartData = rows.map((row) => ({
-    name: String(row[labelCol]),
-    value: Number(row[valueCol]) || 0,
-  }));
-
+  const chartData = rows.map((row) => ({ name: String(row[labelCol]), value: Number(row[valueCol]) || 0 }));
   const valueName = columns[valueCol] || "value";
-
-  const renderPieLabel = (props: any) => {
-    const { name, percent } = props;
-    return name + " (" + (percent * 100).toFixed(0) + "%)";
-  };
+  const renderPieLabel = (props: any) => `${props.name} (${(props.percent * 100).toFixed(0)}%)`;
 
   return (
     <div style={{ marginTop: "16px" }}>
       <div style={{ display: "flex", gap: "4px", marginBottom: "12px" }}>
-        <button
-          onClick={() => setView("chart")}
-          style={{
-            background: view === "chart" ? "var(--accent)" : "var(--bg-tertiary)",
-            color: view === "chart" ? "#fff" : "var(--text-muted)",
-            border: "none", borderRadius: "6px",
-            padding: "4px 10px", fontSize: "12px", cursor: "pointer",
-            display: "flex", alignItems: "center", gap: "4px",
-          }}
-        >
-          <BarChart3 size={12} /> Chart
-        </button>
-        <button
-          onClick={() => setView("table")}
-          style={{
-            background: view === "table" ? "var(--accent)" : "var(--bg-tertiary)",
-            color: view === "table" ? "#fff" : "var(--text-muted)",
-            border: "none", borderRadius: "6px",
-            padding: "4px 10px", fontSize: "12px", cursor: "pointer",
-            display: "flex", alignItems: "center", gap: "4px",
-          }}
-        >
-          <TableIcon size={12} /> Table
-        </button>
+        {["chart", "table"].map((v) => (
+          <button key={v} onClick={() => setView(v as any)} style={{
+            background: view === v ? "var(--accent)" : "var(--bg-tertiary)",
+            color: view === v ? "#fff" : "var(--text-muted)",
+            border: "none", borderRadius: "6px", padding: "4px 10px",
+            fontSize: "12px", cursor: "pointer", display: "flex", alignItems: "center", gap: "4px",
+          }}>
+            {v === "chart" ? <><BarChart3 size={12} /> Chart</> : <><TableIcon size={12} /> Table</>}
+          </button>
+        ))}
       </div>
-
       {view === "chart" && (
-        <div style={{
-          background: "var(--bg-tertiary)",
-          borderRadius: "var(--radius)",
-          padding: "16px",
-          border: "1px solid var(--border)",
-        }}>
+        <div style={{ background: "var(--bg-tertiary)", borderRadius: "var(--radius)", padding: "16px", border: "1px solid var(--border)" }}>
           <ResponsiveContainer width="100%" height={280}>
             {type === "bar" ? (
               <BarChart data={chartData}>
@@ -160,26 +171,13 @@ function ResultChart({ columns, rows }: { columns: string[]; rows: any[][] }) {
                 <YAxis tick={{ fontSize: 11, fill: "var(--text-muted)" }} />
                 <Tooltip contentStyle={{ background: "var(--bg-secondary)", border: "1px solid var(--border)", borderRadius: "8px", fontSize: "13px" }} />
                 <Bar dataKey="value" name={valueName} radius={[4, 4, 0, 0]}>
-                  {chartData.map((_, i) => (
-                    <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
-                  ))}
+                  {chartData.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
                 </Bar>
               </BarChart>
             ) : type === "pie" ? (
               <PieChart>
-                <Pie
-                  data={chartData}
-                  cx="50%"
-                  cy="50%"
-                  outerRadius={100}
-                  dataKey="value"
-                  nameKey="name"
-                  label={renderPieLabel}
-                  labelLine={{ stroke: "var(--text-muted)" }}
-                >
-                  {chartData.map((_, i) => (
-                    <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
-                  ))}
+                <Pie data={chartData} cx="50%" cy="50%" outerRadius={100} dataKey="value" nameKey="name" label={renderPieLabel} labelLine={{ stroke: "var(--text-muted)" }}>
+                  {chartData.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
                 </Pie>
                 <Tooltip contentStyle={{ background: "var(--bg-secondary)", border: "1px solid var(--border)", borderRadius: "8px", fontSize: "13px" }} />
               </PieChart>
@@ -195,35 +193,19 @@ function ResultChart({ columns, rows }: { columns: string[]; rows: any[][] }) {
           </ResponsiveContainer>
         </div>
       )}
-
       {view === "table" && (
         <div style={{ overflowX: "auto", border: "1px solid var(--border)", borderRadius: "var(--radius)" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
-            <thead>
-              <tr>
-                {columns.map((col) => (
-                  <th key={col} style={{
-                    padding: "8px 12px", textAlign: "left",
-                    background: "var(--bg-tertiary)", borderBottom: "1px solid var(--border)",
-                    color: "var(--text-secondary)", fontWeight: 600,
-                    fontSize: "11px", textTransform: "uppercase", letterSpacing: "0.06em",
-                  }}>
-                    {col}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row, i) => (
-                <tr key={i}>
-                  {row.map((val: any, j: number) => (
-                    <td key={j} style={{ padding: "8px 12px", borderBottom: "1px solid var(--border)", color: "var(--text-primary)" }}>
-                      {typeof val === "number" ? val.toLocaleString() : String(val)}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
+            <thead><tr>{columns.map((col) => (
+              <th key={col} style={{ padding: "8px 12px", textAlign: "left", background: "var(--bg-tertiary)", borderBottom: "1px solid var(--border)", color: "var(--text-secondary)", fontWeight: 600, fontSize: "11px", textTransform: "uppercase", letterSpacing: "0.06em" }}>{col}</th>
+            ))}</tr></thead>
+            <tbody>{rows.map((row, i) => (
+              <tr key={i}>{row.map((val: any, j: number) => (
+                <td key={j} style={{ padding: "8px 12px", borderBottom: "1px solid var(--border)", color: "var(--text-primary)" }}>
+                  {typeof val === "number" ? val.toLocaleString() : String(val)}
+                </td>
+              ))}</tr>
+            ))}</tbody>
           </table>
         </div>
       )}
@@ -233,13 +215,8 @@ function ResultChart({ columns, rows }: { columns: string[]; rows: any[][] }) {
 
 function ThemeToggle({ dark, onToggle }: { dark: boolean; onToggle: () => void }) {
   return (
-    <button onClick={onToggle} style={{
-      background: "var(--bg-tertiary)", border: "1px solid var(--border)",
-      borderRadius: "var(--radius-sm)", padding: "6px 10px", cursor: "pointer",
-      color: "var(--text-secondary)", display: "flex", alignItems: "center", gap: "6px", fontSize: "13px",
-    }}>
-      {dark ? <Sun size={14} /> : <Moon size={14} />}
-      {dark ? "Light" : "Dark"}
+    <button onClick={onToggle} style={{ background: "var(--bg-tertiary)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "6px 10px", cursor: "pointer", color: "var(--text-secondary)", display: "flex", alignItems: "center", gap: "6px", fontSize: "13px" }}>
+      {dark ? <Sun size={14} /> : <Moon size={14} />} {dark ? "Light" : "Dark"}
     </button>
   );
 }
@@ -260,11 +237,12 @@ function SqlBlock({ sql }: { sql: string }) {
   );
 }
 
-function MetaRow({ rows, ms }: { rows: number; ms: number }) {
+function MetaRow({ rows, ms, route }: { rows: number; ms: number; route?: string }) {
   return (
-    <div style={{ display: "flex", gap: "16px", marginTop: "10px", fontSize: "12px", color: "var(--text-muted)" }}>
+    <div style={{ display: "flex", gap: "16px", marginTop: "10px", fontSize: "12px", color: "var(--text-muted)", alignItems: "center", flexWrap: "wrap" }}>
       <span style={{ display: "flex", alignItems: "center", gap: "4px" }}><Rows3 size={12} /> {rows} row{rows !== 1 ? "s" : ""}</span>
       <span style={{ display: "flex", alignItems: "center", gap: "4px" }}><Clock size={12} /> {ms}ms</span>
+      <RouteBadge route={route} />
     </div>
   );
 }
@@ -334,7 +312,17 @@ function MessageBubble({ msg, onOptionClick }: { msg: Message; onOptionClick: (q
         <ResultChart columns={msg.columns} rows={msg.data} />
       )}
 
-      {msg.rows !== undefined && <MetaRow rows={msg.rows} ms={msg.ms || 0} />}
+      {/* Source citations for RAG and BOTH routes */}
+      <SourceCitations sources={msg.sources} />
+
+      {msg.rows !== undefined && <MetaRow rows={msg.rows} ms={msg.ms || 0} route={msg.route} />}
+
+      {/* Show route badge even when no SQL rows (RAG-only) */}
+      {msg.rows === undefined && msg.route && (
+        <div style={{ marginTop: "10px" }}>
+          <RouteBadge route={msg.route} />
+        </div>
+      )}
 
       {msg.sql && (
         <div style={{ marginTop: "12px" }}>
@@ -349,14 +337,9 @@ function MessageBubble({ msg, onOptionClick }: { msg: Message; onOptionClick: (q
   );
 }
 
-// ── ConnectPanel — supports both connection string AND sqlite file upload ──
+// ── ConnectPanel ──────────────────────────────────────────────────
 
-function ConnectPanel({
-  onConnect,
-  onFileConnect,
-  onDisconnect,
-  connection,
-}: {
+function ConnectPanel({ onConnect, onFileConnect, onDisconnect, connection }: {
   onConnect: (cs: string) => Promise<void>;
   onFileConnect: (file: File) => Promise<void>;
   onDisconnect: () => void;
@@ -383,8 +366,7 @@ function ConnectPanel({
 
   const handleFile = async (file: File) => {
     if (!file.name.endsWith(".db") && !file.name.endsWith(".sqlite")) {
-      setError("File must be a .db or .sqlite file");
-      return;
+      setError("File must be a .db or .sqlite file"); return;
     }
     setLoading(true); setError("");
     try { await onFileConnect(file); }
@@ -412,10 +394,7 @@ function ConnectPanel({
               {connection.db_type} — {connection.table_count} table{connection.table_count !== 1 ? "s" : ""}
             </span>
           </div>
-          <button
-            onClick={onDisconnect}
-            style={{ background: "none", border: "none", cursor: "pointer", fontSize: "11px", color: "var(--text-muted)", textDecoration: "underline" }}
-          >
+          <button onClick={onDisconnect} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "11px", color: "var(--text-muted)", textDecoration: "underline" }}>
             disconnect
           </button>
         </div>
@@ -430,35 +409,17 @@ function ConnectPanel({
         <span style={{ fontWeight: 600, fontSize: "14px" }}>Connect a database</span>
       </div>
 
-      {/* SQLite file drop zone */}
       <div
         onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
         onDragLeave={() => setDragOver(false)}
         onDrop={onDrop}
         onClick={() => fileRef.current?.click()}
-        style={{
-          border: `2px dashed ${dragOver ? "var(--accent)" : "var(--border)"}`,
-          borderRadius: "var(--radius-sm)",
-          padding: "14px 12px",
-          textAlign: "center",
-          cursor: "pointer",
-          background: dragOver ? "var(--bg-tertiary)" : "transparent",
-          marginBottom: "12px",
-          transition: "all 0.15s",
-        }}
+        style={{ border: `2px dashed ${dragOver ? "var(--accent)" : "var(--border)"}`, borderRadius: "var(--radius-sm)", padding: "14px 12px", textAlign: "center", cursor: "pointer", background: dragOver ? "var(--bg-tertiary)" : "transparent", marginBottom: "12px", transition: "all 0.15s" }}
       >
         <Upload size={16} color="var(--accent)" style={{ margin: "0 auto 6px" }} />
-        <p style={{ fontSize: "12px", color: "var(--text-secondary)", margin: 0 }}>
-          Drop a <strong>.db</strong> or <strong>.sqlite</strong> file here
-        </p>
+        <p style={{ fontSize: "12px", color: "var(--text-secondary)", margin: 0 }}>Drop a <strong>.db</strong> or <strong>.sqlite</strong> file here</p>
         <p style={{ fontSize: "11px", color: "var(--text-muted)", margin: "2px 0 0" }}>or click to browse</p>
-        <input
-          ref={fileRef}
-          type="file"
-          accept=".db,.sqlite"
-          style={{ display: "none" }}
-          onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); }}
-        />
+        <input ref={fileRef} type="file" accept=".db,.sqlite" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px" }}>
@@ -467,32 +428,13 @@ function ConnectPanel({
         <div style={{ flex: 1, height: "1px", background: "var(--border)" }} />
       </div>
 
-      <textarea
-        value={cs}
-        onChange={(e) => setCs(e.target.value)}
-        placeholder="postgresql://user:pass@host:5432/dbname"
-        rows={2}
-        style={{
-          width: "100%", background: "var(--bg-tertiary)", border: "1px solid var(--border)",
-          borderRadius: "var(--radius-sm)", padding: "10px 12px", fontSize: "12px",
-          fontFamily: "monospace", color: "var(--text-primary)", resize: "none",
-          outline: "none", marginBottom: "10px", boxSizing: "border-box",
-        }}
-      />
+      <textarea value={cs} onChange={(e) => setCs(e.target.value)} placeholder="postgresql://user:pass@host:5432/dbname" rows={2}
+        style={{ width: "100%", background: "var(--bg-tertiary)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "10px 12px", fontSize: "12px", fontFamily: "monospace", color: "var(--text-primary)", resize: "none", outline: "none", marginBottom: "10px", boxSizing: "border-box" }} />
 
       {error && <p style={{ fontSize: "12px", color: "var(--error)", marginBottom: "8px" }}>{error}</p>}
 
-      <button
-        onClick={submitCs}
-        disabled={loading || !cs.trim()}
-        style={{
-          width: "100%", background: "var(--accent)", color: "#fff", border: "none",
-          borderRadius: "var(--radius-sm)", padding: "8px", fontSize: "13px", fontWeight: 600,
-          cursor: loading || !cs.trim() ? "not-allowed" : "pointer",
-          opacity: loading || !cs.trim() ? 0.6 : 1,
-          display: "flex", alignItems: "center", justifyContent: "center", gap: "6px", marginBottom: "12px",
-        }}
-      >
+      <button onClick={submitCs} disabled={loading || !cs.trim()}
+        style={{ width: "100%", background: "var(--accent)", color: "#fff", border: "none", borderRadius: "var(--radius-sm)", padding: "8px", fontSize: "13px", fontWeight: 600, cursor: loading || !cs.trim() ? "not-allowed" : "pointer", opacity: loading || !cs.trim() ? 0.6 : 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "6px", marginBottom: "12px" }}>
         {loading ? <Loader2 size={14} /> : <Plug size={14} />}
         {loading ? "Connecting..." : "Connect"}
       </button>
@@ -510,21 +452,33 @@ function ConnectPanel({
   );
 }
 
+// ── Example questions — Chinook + RAG ─────────────────────────────
+
 function ExampleQuestions({ onSelect }: { onSelect: (q: string) => void }) {
   const examples = [
-    "How many orders do we have in total?",
-    "Who are the top 5 customers by revenue?",
-    "What is the total revenue by product category?",
-    "How many orders were placed each month in 2024?",
-    "Which products have never been ordered?",
-    "What percentage of orders were cancelled?",
+    { q: "What is the total revenue by genre?", badge: "SQL" },
+    { q: "Who are our top 5 artists by revenue?", badge: "SQL" },
+    { q: "What is the global recorded music revenue growth rate?", badge: "RAG" },
+    { q: "What does the IFPI report say about Latin America?", badge: "RAG" },
+    { q: "How does our Rock revenue compare to global industry trends?", badge: "BOTH" },
+    { q: "How does our Latin music sales compare to the global Latin market growth?", badge: "BOTH" },
   ];
+
+  const badgeColors: Record<string, { bg: string; color: string }> = {
+    SQL: { bg: "#dbeafe", color: "#1d4ed8" },
+    RAG: { bg: "#fef3c7", color: "#92400e" },
+    BOTH: { bg: "#ede9fe", color: "#5b21b6" },
+  };
+
   return (
     <div style={{ padding: "20px" }}>
       <p style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "10px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em" }}>Example questions</p>
-      {examples.map((q) => (
+      {examples.map(({ q, badge }) => (
         <button key={q} onClick={() => onSelect(q)}
           style={{ display: "block", width: "100%", textAlign: "left", background: "var(--bg-tertiary)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "8px 10px", fontSize: "12px", color: "var(--text-secondary)", cursor: "pointer", marginBottom: "6px", lineHeight: 1.4 }}>
+          <span style={{ display: "inline-block", fontSize: "10px", fontWeight: 700, padding: "1px 6px", borderRadius: "8px", marginRight: "6px", background: badgeColors[badge].bg, color: badgeColors[badge].color }}>
+            {badge}
+          </span>
           {q}
         </button>
       ))}
@@ -535,7 +489,6 @@ function ExampleQuestions({ onSelect }: { onSelect: (q: string) => void }) {
 // ── Main page ─────────────────────────────────────────────────────
 
 export default function Home() {
-  // ALL useState hooks first — no exceptions
   const [dark, setDark] = useState<boolean>(false);
   const [connection, setConnection] = useState<ConnectionState>({ connected: false });
   const [sessionId, setSessionId] = useState<string>("");
@@ -545,19 +498,12 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  // ALL useEffect hooks next
   useEffect(() => {
     const savedDark = loadFromStorage("llm_sql_dark", false);
     const savedConn = loadFromStorage<ConnectionState>("llm_sql_connection", { connected: false });
     let savedSession = loadFromStorage<string>("llm_sql_session", "");
-    if (!savedSession) {
-      savedSession = generateId();
-      saveToStorage("llm_sql_session", savedSession);
-    }
-    setDark(savedDark);
-    setConnection(savedConn);
-    setSessionId(savedSession);
-    setHydrated(true);
+    if (!savedSession) { savedSession = generateId(); saveToStorage("llm_sql_session", savedSession); }
+    setDark(savedDark); setConnection(savedConn); setSessionId(savedSession); setHydrated(true);
   }, []);
 
   useEffect(() => {
@@ -568,85 +514,41 @@ export default function Home() {
   }, [hydrated]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (dark) {
-      document.documentElement.classList.add("dark");
-      document.documentElement.setAttribute("data-theme", "dark");
-    } else {
-      document.documentElement.classList.remove("dark");
-      document.documentElement.setAttribute("data-theme", "light");
-    }
+    if (dark) { document.documentElement.classList.add("dark"); document.documentElement.setAttribute("data-theme", "dark"); }
+    else { document.documentElement.classList.remove("dark"); document.documentElement.setAttribute("data-theme", "light"); }
     saveToStorage("llm_sql_dark", dark);
   }, [dark]);
 
-  useEffect(() => {
-    saveToStorage("llm_sql_connection", connection);
-  }, [connection]);
-
+  useEffect(() => { saveToStorage("llm_sql_connection", connection); }, [connection]);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
-  // Conditional return AFTER all hooks
   if (!hydrated) return null;
 
-  // Connect via connection string (PostgreSQL / MySQL / SQLite path)
   const handleConnect = async (cs: string) => {
-    const res = await axios.post(API_URL + "/connect", {
-      connection_string: cs,
-      session_id: sessionId,
-    });
-    setConnection({
-      connected: true,
-      db_type: res.data.db_type,
-      table_count: res.data.table_count,
-    });
+    const res = await axios.post(API_URL + "/connect", { connection_string: cs, session_id: sessionId });
+    setConnection({ connected: true, db_type: res.data.db_type, table_count: res.data.table_count });
   };
 
-  // Connect via GCS upload of SQLite file (bypasses Cloud Run size limit)
+  // SQLite file upload — direct multipart (for files <30MB)
   const handleFileConnect = async (file: File) => {
-    // Step 1: get signed URL
-    const { data } = await axios.get(`${API_URL}/upload/get-signed-url`, {
-      params: { session_id: sessionId }
-    });
-
-    // Step 2: upload directly to GCS (no Cloud Run size limit)
-    await axios.put(data.upload_url, file, {
-      headers: { "Content-Type": "application/octet-stream" },
-      onUploadProgress: (e) => {
-        const pct = Math.round((e.loaded / (e.total || 1)) * 100);
-        console.log(`Uploading: ${pct}%`);
-      }
-    });
-
-    // Step 3: tell backend to connect
-    const res = await axios.post(`${API_URL}/upload/connect-from-gcs`, null, {
-      params: { blob_path: data.blob_path, session_id: sessionId }
-    });
-
-    setConnection({
-      connected: true,
-      db_type: "sqlite",
-      table_count: res.data.table_count,
-    });
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("session_id", sessionId);
+    const res = await axios.post(API_URL + "/connect/sqlite-upload", formData);
+    setConnection({ connected: true, db_type: "sqlite", table_count: res.data.table_count });
   };
 
-  // Disconnect
   const handleDisconnect = async () => {
-    try {
-      await axios.post(`${API_URL}/disconnect/${sessionId}`);
-    } catch { }
+    try { await axios.post(`${API_URL}/disconnect/${sessionId}`); } catch { }
     setConnection({ connected: false });
   };
 
   const sendMessage = async (question: string) => {
     if (!question.trim() || loading) return;
     setMessages((prev) => [...prev, { id: generateId(), type: "user", question, timestamp: new Date().toISOString() }]);
-    setInput("");
-    setLoading(true);
+    setInput(""); setLoading(true);
     try {
-      const res = await axios.post(API_URL + "/query", {
-        question,
-        user_id: "default_user",
-        session_id: sessionId,
-      });
+      const res = await axios.post(API_URL + "/query", { question, user_id: "default_user", session_id: sessionId });
       const data = res.data;
       if (data.needs_clarification) {
         setMessages((prev) => [...prev, { id: generateId(), type: "clarification", question, clarification: data.clarification, timestamp: new Date().toISOString() }]);
@@ -655,9 +557,15 @@ export default function Home() {
       } else {
         setMessages((prev) => [...prev, {
           id: generateId(), type: "answer",
-          answer: data.answer, insights: data.key_insights,
-          sql: data.sql, rows: data.row_count, ms: data.execution_ms,
-          columns: data.columns || [], data: data.rows || [],
+          answer: data.answer,
+          insights: data.key_insights,
+          sql: data.sql,
+          rows: data.row_count,
+          ms: data.execution_ms,
+          columns: data.columns || [],
+          data: data.rows || [],
+          route: data.route,
+          sources: data.sources || [],
           timestamp: new Date().toISOString(),
         }]);
       }
@@ -684,12 +592,7 @@ export default function Home() {
           </div>
         </div>
         <div style={{ borderBottom: "1px solid var(--border)" }}>
-          <ConnectPanel
-            onConnect={handleConnect}
-            onFileConnect={handleFileConnect}
-            onDisconnect={handleDisconnect}
-            connection={connection}
-          />
+          <ConnectPanel onConnect={handleConnect} onFileConnect={handleFileConnect} onDisconnect={handleDisconnect} connection={connection} />
         </div>
         <div style={{ flex: 1, overflowY: "auto" }}>
           <ExampleQuestions onSelect={(q) => { setInput(q); sendMessage(q); }} />
@@ -699,15 +602,13 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Main chat area */}
+      {/* Main chat */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         <div style={{ padding: "16px 24px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between", background: "var(--bg-primary)" }}>
           <div>
             <h1 style={{ fontSize: "16px", fontWeight: 600 }}>Chat</h1>
             <p style={{ fontSize: "12px", color: "var(--text-muted)" }}>
-              {connection.connected
-                ? `Connected to ${connection.db_type} — ${connection.table_count} tables`
-                : "Using demo database (Northwind)"}
+              {connection.connected ? `Connected to ${connection.db_type} — ${connection.table_count} tables` : "Using Chinook demo database"}
             </p>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
@@ -722,11 +623,23 @@ export default function Home() {
           {messages.length === 0 && (
             <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "var(--text-muted)", gap: "12px" }}>
               <div style={{ width: 56, height: 56, background: "var(--bg-tertiary)", borderRadius: "16px", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                <Table2 size={24} color="var(--accent)" />
+                <GitMerge size={24} color="var(--accent)" />
               </div>
               <div style={{ textAlign: "center" }}>
-                <p style={{ fontWeight: 600, marginBottom: "4px", color: "var(--text-primary)" }}>Ask anything about your data</p>
-                <p style={{ fontSize: "13px" }}>Connect your database or use the demo — then ask in plain English.</p>
+                <p style={{ fontWeight: 600, marginBottom: "4px", color: "var(--text-primary)" }}>Agentic RAG — SQL + Documents</p>
+                <p style={{ fontSize: "13px" }}>Ask about your data, industry reports, or both. The agent decides which source to use.</p>
+              </div>
+              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", justifyContent: "center", marginTop: "4px" }}>
+                {[
+                  { label: "🗄️ SQL", desc: "database queries" },
+                  { label: "📄 Document", desc: "industry reports" },
+                  { label: "🔀 SQL + Doc", desc: "combined insights" },
+                ].map(({ label, desc }) => (
+                  <div key={label} style={{ background: "var(--bg-tertiary)", border: "1px solid var(--border)", borderRadius: "8px", padding: "8px 12px", fontSize: "12px", textAlign: "center" }}>
+                    <div style={{ fontWeight: 600, color: "var(--text-primary)" }}>{label}</div>
+                    <div style={{ color: "var(--text-muted)", fontSize: "11px" }}>{desc}</div>
+                  </div>
+                ))}
               </div>
             </div>
           )}
@@ -743,19 +656,11 @@ export default function Home() {
 
         <div style={{ padding: "16px 24px", borderTop: "1px solid var(--border)", background: "var(--bg-primary)" }}>
           <div style={{ display: "flex", gap: "10px", background: "var(--bg-secondary)", border: "1px solid var(--border)", borderRadius: "12px", padding: "10px 14px", alignItems: "flex-end" }}>
-            <textarea
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Ask a question about your data..."
-              rows={1}
-              style={{ flex: 1, background: "none", border: "none", outline: "none", resize: "none", fontSize: "14px", color: "var(--text-primary)", lineHeight: 1.5, fontFamily: "inherit", maxHeight: "120px", overflowY: "auto" }}
-            />
-            <button
-              onClick={() => sendMessage(input)}
-              disabled={!input.trim() || loading}
-              style={{ background: "var(--accent)", color: "#fff", border: "none", borderRadius: "8px", padding: "6px 10px", cursor: !input.trim() || loading ? "not-allowed" : "pointer", opacity: !input.trim() || loading ? 0.5 : 1, display: "flex", alignItems: "center", flexShrink: 0 }}
-            >
+            <textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={handleKeyDown}
+              placeholder="Ask about your data or the music industry..." rows={1}
+              style={{ flex: 1, background: "none", border: "none", outline: "none", resize: "none", fontSize: "14px", color: "var(--text-primary)", lineHeight: 1.5, fontFamily: "inherit", maxHeight: "120px", overflowY: "auto" }} />
+            <button onClick={() => sendMessage(input)} disabled={!input.trim() || loading}
+              style={{ background: "var(--accent)", color: "#fff", border: "none", borderRadius: "8px", padding: "6px 10px", cursor: !input.trim() || loading ? "not-allowed" : "pointer", opacity: !input.trim() || loading ? 0.5 : 1, display: "flex", alignItems: "center", flexShrink: 0 }}>
               <Send size={14} />
             </button>
           </div>
