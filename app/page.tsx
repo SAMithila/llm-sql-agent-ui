@@ -7,7 +7,7 @@ import {
   ChevronDown, ChevronRight, Loader2, AlertCircle,
   CheckCircle2, Table2, Copy, Check,
   Sparkles, Clock, Rows3, BarChart3, TableIcon, Upload,
-  FileText, GitMerge
+  FileText, GitMerge, ThumbsUp, ThumbsDown, Info
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -41,7 +41,9 @@ interface Message {
   data?: any[][];
   error?: string;
   route?: string;
+  route_reason?: string;
   sources?: Source[];
+  feedback?: 1 | -1 | null;
   clarification?: {
     clarification_message: string;
     questions: { question: string; options: string[] }[];
@@ -93,6 +95,129 @@ function RouteBadge({ route }: { route?: string }) {
   );
 }
 
+// ── Explainability panel ──────────────────────────────────────────
+
+function ExplainPanel({ route, reason }: { route?: string; reason?: string }) {
+  const [open, setOpen] = useState(false);
+  if (!route || !reason) return null;
+
+  const routeDescriptions: Record<string, string> = {
+    SQL: "This question was answered using your database — the agent generated and executed a SQL query against the Chinook music store data.",
+    RAG: "This question was answered using industry documents — the agent searched IFPI, Spotify, and Luminate reports for relevant context.",
+    BOTH: "This question required both sources — the agent queried your database for internal data and searched industry documents for market context, then synthesized both.",
+  };
+
+  return (
+    <div style={{ marginTop: "10px" }}>
+      <button
+        onClick={() => setOpen(!open)}
+        style={{
+          background: "none", border: "none", cursor: "pointer",
+          color: "var(--text-muted)", fontSize: "12px",
+          display: "flex", alignItems: "center", gap: "4px",
+        }}
+      >
+        <Info size={12} />
+        Why this route?
+        {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+      </button>
+
+      {open && (
+        <div style={{
+          marginTop: "8px", padding: "10px 12px",
+          background: "var(--bg-tertiary)", borderRadius: "8px",
+          border: "1px solid var(--border)", fontSize: "12px",
+          color: "var(--text-secondary)", lineHeight: 1.6,
+        }}>
+          <p style={{ marginBottom: "6px" }}>
+            <strong>Route:</strong> <RouteBadge route={route} />
+          </p>
+          <p style={{ marginBottom: "6px" }}>
+            <strong>Agent reasoning:</strong> {reason}
+          </p>
+          <p style={{ color: "var(--text-muted)", fontSize: "11px" }}>
+            {routeDescriptions[route] || ""}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Feedback buttons ──────────────────────────────────────────────
+
+function FeedbackButtons({
+  messageId,
+  question,
+  route,
+  sessionId,
+  feedback,
+  onFeedback,
+}: {
+  messageId: string;
+  question?: string;
+  route?: string;
+  sessionId: string;
+  feedback?: 1 | -1 | null;
+  onFeedback: (id: string, rating: 1 | -1) => void;
+}) {
+  const [submitted, setSubmitted] = useState<1 | -1 | null>(feedback || null);
+
+  const handleClick = async (rating: 1 | -1) => {
+    if (submitted) return;
+    setSubmitted(rating);
+    onFeedback(messageId, rating);
+
+    try {
+      await axios.post(API_URL + "/feedback", {
+        message_id: messageId,
+        question: question || "",
+        route: route || "SQL",
+        rating,
+        session_id: sessionId,
+      });
+    } catch {
+      // Fail silently — feedback is non-critical
+    }
+  };
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "10px" }}>
+      <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
+        {submitted ? "Thanks for your feedback" : "Was this helpful?"}
+      </span>
+      <button
+        onClick={() => handleClick(1)}
+        disabled={!!submitted}
+        style={{
+          background: submitted === 1 ? "#dcfce7" : "var(--bg-tertiary)",
+          border: `1px solid ${submitted === 1 ? "#22c55e" : "var(--border)"}`,
+          borderRadius: "6px", padding: "3px 8px", cursor: submitted ? "default" : "pointer",
+          display: "flex", alignItems: "center", gap: "3px",
+          color: submitted === 1 ? "#15803d" : "var(--text-muted)",
+          fontSize: "12px", transition: "all 0.15s",
+        }}
+      >
+        <ThumbsUp size={11} />
+      </button>
+      <button
+        onClick={() => handleClick(-1)}
+        disabled={!!submitted}
+        style={{
+          background: submitted === -1 ? "#fee2e2" : "var(--bg-tertiary)",
+          border: `1px solid ${submitted === -1 ? "#ef4444" : "var(--border)"}`,
+          borderRadius: "6px", padding: "3px 8px", cursor: submitted ? "default" : "pointer",
+          display: "flex", alignItems: "center", gap: "3px",
+          color: submitted === -1 ? "#dc2626" : "var(--text-muted)",
+          fontSize: "12px", transition: "all 0.15s",
+        }}
+      >
+        <ThumbsDown size={11} />
+      </button>
+    </div>
+  );
+}
+
 // ── Source citations ──────────────────────────────────────────────
 
 function SourceCitations({ sources }: { sources?: Source[] }) {
@@ -103,10 +228,7 @@ function SourceCitations({ sources }: { sources?: Source[] }) {
         Sources
       </p>
       {sources.map((s, i) => (
-        <div key={i} style={{
-          display: "flex", alignItems: "center", gap: "6px",
-          fontSize: "12px", color: "var(--text-secondary)", marginBottom: "4px",
-        }}>
+        <div key={i} style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "var(--text-secondary)", marginBottom: "4px" }}>
           <FileText size={11} color="var(--text-muted)" />
           <span>{s.title} — {s.publisher}, {s.year}</span>
         </div>
@@ -247,7 +369,17 @@ function MetaRow({ rows, ms, route }: { rows: number; ms: number; route?: string
   );
 }
 
-function MessageBubble({ msg, onOptionClick }: { msg: Message; onOptionClick: (q: string) => void }) {
+function MessageBubble({
+  msg,
+  sessionId,
+  onOptionClick,
+  onFeedback,
+}: {
+  msg: Message;
+  sessionId: string;
+  onOptionClick: (q: string) => void;
+  onFeedback: (id: string, rating: 1 | -1) => void;
+}) {
   const [showSql, setShowSql] = useState(false);
 
   if (msg.type === "user") {
@@ -312,17 +444,28 @@ function MessageBubble({ msg, onOptionClick }: { msg: Message; onOptionClick: (q
         <ResultChart columns={msg.columns} rows={msg.data} />
       )}
 
-      {/* Source citations for RAG and BOTH routes */}
       <SourceCitations sources={msg.sources} />
 
       {msg.rows !== undefined && <MetaRow rows={msg.rows} ms={msg.ms || 0} route={msg.route} />}
 
-      {/* Show route badge even when no SQL rows (RAG-only) */}
       {msg.rows === undefined && msg.route && (
         <div style={{ marginTop: "10px" }}>
           <RouteBadge route={msg.route} />
         </div>
       )}
+
+      {/* HCD: Explainability panel */}
+      <ExplainPanel route={msg.route} reason={msg.route_reason} />
+
+      {/* HCD: Feedback buttons */}
+      <FeedbackButtons
+        messageId={msg.id}
+        question={msg.question}
+        route={msg.route}
+        sessionId={sessionId}
+        feedback={msg.feedback}
+        onFeedback={onFeedback}
+      />
 
       {msg.sql && (
         <div style={{ marginTop: "12px" }}>
@@ -452,7 +595,7 @@ function ConnectPanel({ onConnect, onFileConnect, onDisconnect, connection }: {
   );
 }
 
-// ── Example questions — Chinook + RAG ─────────────────────────────
+// ── Example questions ─────────────────────────────────────────────
 
 function ExampleQuestions({ onSelect }: { onSelect: (q: string) => void }) {
   const examples = [
@@ -529,7 +672,6 @@ export default function Home() {
     setConnection({ connected: true, db_type: res.data.db_type, table_count: res.data.table_count });
   };
 
-  // SQLite file upload — direct multipart (for files <30MB)
   const handleFileConnect = async (file: File) => {
     const formData = new FormData();
     formData.append("file", file);
@@ -541,6 +683,10 @@ export default function Home() {
   const handleDisconnect = async () => {
     try { await axios.post(`${API_URL}/disconnect/${sessionId}`); } catch { }
     setConnection({ connected: false });
+  };
+
+  const handleFeedback = (id: string, rating: 1 | -1) => {
+    setMessages((prev) => prev.map((m) => m.id === id ? { ...m, feedback: rating } : m));
   };
 
   const sendMessage = async (question: string) => {
@@ -565,7 +711,10 @@ export default function Home() {
           columns: data.columns || [],
           data: data.rows || [],
           route: data.route,
+          route_reason: data.route_reason,
           sources: data.sources || [],
+          feedback: null,
+          question,
           timestamp: new Date().toISOString(),
         }]);
       }
@@ -644,7 +793,13 @@ export default function Home() {
             </div>
           )}
           {messages.map((msg) => (
-            <MessageBubble key={msg.id} msg={msg} onOptionClick={(q) => sendMessage(q)} />
+            <MessageBubble
+              key={msg.id}
+              msg={msg}
+              sessionId={sessionId}
+              onOptionClick={(q) => sendMessage(q)}
+              onFeedback={handleFeedback}
+            />
           ))}
           {loading && (
             <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "var(--text-muted)", fontSize: "13px", marginBottom: "16px" }}>
