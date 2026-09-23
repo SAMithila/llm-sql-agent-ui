@@ -674,7 +674,17 @@ function ExampleQuestions({ onSelect }: { onSelect: (q: string) => void }) {
 export default function Home() {
   const [dark, setDark] = useState<boolean>(false);
   const [connection, setConnection] = useState<ConnectionState>({ connected: false });
+  // `sessionId` is the session the user's own uploaded/connected database
+  // lives under on the backend (registered via /connect or
+  // /connect/sqlite-upload). `demoSessionId` is a separate session that is
+  // never passed to /connect, so the backend always falls back to the
+  // Chinook demo database for it. `activeMode` just picks which of the two
+  // session ids gets sent with each query — toggling it never calls
+  // /disconnect, so the uploaded database's connection stays alive and the
+  // user can switch back to it without re-uploading.
   const [sessionId, setSessionId] = useState<string>("");
+  const [demoSessionId, setDemoSessionId] = useState<string>("");
+  const [activeMode, setActiveMode] = useState<"live" | "demo">("demo");
   const [hydrated, setHydrated] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -684,9 +694,14 @@ export default function Home() {
   useEffect(() => {
     const savedDark = loadFromStorage("llm_sql_dark", false);
     const savedConn = loadFromStorage<ConnectionState>("llm_sql_connection", { connected: false });
+    const savedMode = loadFromStorage<"live" | "demo">("llm_sql_active_mode", "demo");
     let savedSession = loadFromStorage<string>("llm_sql_session", "");
     if (!savedSession) { savedSession = generateId(); saveToStorage("llm_sql_session", savedSession); }
-    setDark(savedDark); setConnection(savedConn); setSessionId(savedSession); setHydrated(true);
+    let savedDemoSession = loadFromStorage<string>("llm_sql_demo_session", "");
+    if (!savedDemoSession) { savedDemoSession = generateId(); saveToStorage("llm_sql_demo_session", savedDemoSession); }
+    setDark(savedDark); setConnection(savedConn); setSessionId(savedSession);
+    setDemoSessionId(savedDemoSession); setActiveMode(savedConn.connected ? savedMode : "demo");
+    setHydrated(true);
   }, []);
 
   useEffect(() => {
@@ -703,13 +718,22 @@ export default function Home() {
   }, [dark]);
 
   useEffect(() => { saveToStorage("llm_sql_connection", connection); }, [connection]);
+  useEffect(() => { saveToStorage("llm_sql_active_mode", activeMode); }, [activeMode]);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
   if (!hydrated) return null;
 
+  // Single source of truth for "which connection is active right now" —
+  // the example-questions panel, the top-right label, and the input
+  // placeholder all read from this instead of each tracking their own
+  // condition on `connection.connected`.
+  const isLive = connection.connected && activeMode === "live";
+  const activeSessionId = isLive ? sessionId : demoSessionId;
+
   const handleConnect = async (cs: string) => {
     const res = await axios.post(API_URL + "/connect", { connection_string: cs, session_id: sessionId });
     setConnection({ connected: true, db_type: res.data.db_type, table_count: res.data.table_count });
+    setActiveMode("live");
   };
 
   const handleFileConnect = async (file: File) => {
@@ -718,11 +742,13 @@ export default function Home() {
     formData.append("session_id", sessionId);
     const res = await axios.post(API_URL + "/connect/sqlite-upload", formData);
     setConnection({ connected: true, db_type: "sqlite", table_count: res.data.table_count });
+    setActiveMode("live");
   };
 
   const handleDisconnect = async () => {
     try { await axios.post(`${API_URL}/disconnect/${sessionId}`); } catch { }
     setConnection({ connected: false });
+    setActiveMode("demo");
   };
 
   const handleFeedback = (id: string, rating: 1 | -1) => {
@@ -734,7 +760,7 @@ export default function Home() {
     setMessages((prev) => [...prev, { id: generateId(), type: "user", question, timestamp: new Date().toISOString() }]);
     setInput(""); setLoading(true);
     try {
-      const res = await axios.post(API_URL + "/query", { question, user_id: "default_user", session_id: sessionId });
+      const res = await axios.post(API_URL + "/query", { question, user_id: "default_user", session_id: activeSessionId });
       const data = res.data;
       if (data.needs_clarification) {
         setMessages((prev) => [...prev, { id: generateId(), type: "clarification", question, clarification: data.clarification, timestamp: new Date().toISOString() }]);
@@ -784,7 +810,7 @@ export default function Home() {
           <ConnectPanel onConnect={handleConnect} onFileConnect={handleFileConnect} onDisconnect={handleDisconnect} connection={connection} />
         </div>
         <div style={{ flex: 1, overflowY: "auto" }}>
-          <ExampleQuestions onSelect={(q) => { setInput(q); sendMessage(q); }} />
+          {!isLive && <ExampleQuestions onSelect={(q) => { setInput(q); sendMessage(q); }} />}
         </div>
         <div style={{ padding: "16px 20px", borderTop: "1px solid var(--border)", display: "flex", justifyContent: "flex-end" }}>
           <ThemeToggle dark={dark} onToggle={() => setDark(!dark)} />
@@ -797,14 +823,32 @@ export default function Home() {
           <div>
             <h1 style={{ fontSize: "16px", fontWeight: 600 }}>Chat</h1>
             <p style={{ fontSize: "12px", color: "var(--text-muted)" }}>
-              {connection.connected ? `Connected to ${connection.db_type} — ${connection.table_count} tables` : "Using Chinook demo database"}
+              {isLive ? `Connected to ${connection.db_type} — ${connection.table_count} tables` : "Using Chinook demo database"}
             </p>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-            {connection.connected ? <PlugZap size={14} color="var(--success)" /> : <Database size={14} color="var(--text-muted)" />}
-            <span style={{ fontSize: "12px", color: connection.connected ? "var(--success)" : "var(--text-muted)" }}>
-              {connection.connected ? "Live database" : "Demo mode"}
+            {isLive ? <PlugZap size={14} color="var(--success)" /> : <Database size={14} color="var(--text-muted)" />}
+            <span style={{ fontSize: "12px", color: isLive ? "var(--success)" : "var(--text-muted)" }}>
+              {isLive ? "Live database" : "Demo mode"}
             </span>
+            {/* Toggle only appears once there's a live connection to toggle
+                to — it switches which session_id queries use, without
+                calling /disconnect, so the uploaded database stays connected
+                in the background while "Demo" is active. */}
+            {connection.connected && (
+              <div style={{ display: "flex", gap: "4px", marginLeft: "2px" }}>
+                {(["live", "demo"] as const).map((m) => (
+                  <button key={m} onClick={() => setActiveMode(m)} style={{
+                    background: activeMode === m ? "var(--accent)" : "var(--bg-tertiary)",
+                    color: activeMode === m ? "#fff" : "var(--text-muted)",
+                    border: "none", borderRadius: "6px", padding: "3px 9px",
+                    fontSize: "11px", cursor: "pointer", fontWeight: 600,
+                  }}>
+                    {m === "live" ? "Live database" : "Demo"}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 
@@ -852,7 +896,7 @@ export default function Home() {
         <div style={{ padding: "16px 24px", borderTop: "1px solid var(--border)", background: "var(--bg-primary)" }}>
           <div style={{ display: "flex", gap: "10px", background: "var(--bg-secondary)", border: "1px solid var(--border)", borderRadius: "12px", padding: "10px 14px", alignItems: "flex-end" }}>
             <textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={handleKeyDown}
-              placeholder="Ask about your data or the music industry..." rows={1}
+              placeholder={isLive ? "Ask about your data" : "Ask about your data or the music industry."} rows={1}
               style={{ flex: 1, background: "none", border: "none", outline: "none", resize: "none", fontSize: "14px", color: "var(--text-primary)", lineHeight: 1.5, fontFamily: "inherit", maxHeight: "120px", overflowY: "auto" }} />
             <button onClick={() => sendMessage(input)} disabled={!input.trim() || loading}
               style={{ background: "var(--accent)", color: "#fff", border: "none", borderRadius: "8px", padding: "6px 10px", cursor: !input.trim() || loading ? "not-allowed" : "pointer", opacity: !input.trim() || loading ? 0.5 : 1, display: "flex", alignItems: "center", flexShrink: 0 }}>
