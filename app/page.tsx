@@ -828,9 +828,16 @@ export default function Home() {
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
             {isLive ? <PlugZap size={14} color="var(--success)" /> : <Database size={14} color="var(--text-muted)" />}
-            <span style={{ fontSize: "12px", color: isLive ? "var(--success)" : "var(--text-muted)" }}>
-              {isLive ? "Live database" : "Demo mode"}
-            </span>
+            {/* Once a database is connected, the toggle pills below are the
+                status display — the highlighted pill already says which
+                mode is active, so a separate static label here would just
+                repeat the same words next to the pills. Only render the
+                plain label when there's no toggle to show instead. */}
+            {!connection.connected && (
+              <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+                Demo mode
+              </span>
+            )}
             {/* Toggle only appears once there's a live connection to toggle
                 to — it switches which session_id queries use, without
                 calling /disconnect, so the uploaded database stays connected
