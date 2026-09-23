@@ -239,34 +239,69 @@ function SourceCitations({ sources }: { sources?: Source[] }) {
 
 // ── Chart ─────────────────────────────────────────────────────────
 
+// Some source databases store numeric-looking values as TEXT (e.g. a
+// "price" column with TEXT affinity in a SQLite db seeded from CSVs), so
+// typeof never reports "number" for that column even though it holds a
+// number. Treat a value as numeric if it's a real number OR a string that
+// parses cleanly to one.
+function isNumericLike(v: unknown): boolean {
+  if (typeof v === "number") return Number.isFinite(v);
+  if (typeof v === "string" && v.trim() !== "") return Number.isFinite(Number(v));
+  return false;
+}
+
+const LABEL_NAME_HINT = /name|title|category|label|type|desc/i;
+
 function detectChartType(columns: string[], rows: any[][]): {
   type: "bar" | "pie" | "line" | "none"; labelCol: number; valueCol: number;
 } {
   if (!columns || !rows || rows.length < 2 || columns.length < 2)
-    return { type: "none", labelCol: 0, valueCol: 1 };
+    return { type: "none", labelCol: -1, valueCol: -1 };
 
-  let labelCol = -1, valueCol = -1;
+  // Fast path: a column whose first-row value is a real JS number — matches
+  // simple aggregate results (SUM/COUNT) that come back natively typed.
+  let valueCol = -1;
   for (let i = 0; i < columns.length; i++) {
-    const v = rows[0][i];
-    if (labelCol === -1 && typeof v === "string") labelCol = i;
-    if (valueCol === -1 && typeof v === "number") valueCol = i;
+    if (typeof rows[0][i] === "number") { valueCol = i; break; }
   }
-  if (labelCol === -1) labelCol = 0;
-  if (valueCol === -1) valueCol = columns.length > 1 ? 1 : 0;
+
+  // Fallback: no column is natively numeric (e.g. every column is TEXT at
+  // the DB level). Pick the last column whose values all parse as numbers
+  // — value/measure columns conventionally come last in a SELECT list, so
+  // this favors the real metric (e.g. "price") over an earlier
+  // numeric-looking id/length column.
+  if (valueCol === -1) {
+    for (let i = columns.length - 1; i >= 0; i--) {
+      if (rows.every((row) => isNumericLike(row[i]))) { valueCol = i; break; }
+    }
+  }
+
+  // No numeric column at all — nothing sensible to chart.
+  if (valueCol === -1) return { type: "none", labelCol: -1, valueCol: -1 };
+
+  // Label column: prefer a non-numeric column whose name looks like a label
+  // (name/category/title/...), else the first non-numeric column, else fall
+  // back to row index (handled by the caller when labelCol is -1).
+  const nonNumericCols = columns
+    .map((_, i) => i)
+    .filter((i) => i !== valueCol && !isNumericLike(rows[0][i]));
+  const labelCol = nonNumericCols.find((i) => LABEL_NAME_HINT.test(columns[i])) ?? nonNumericCols[0] ?? -1;
 
   if (rows.length <= 6) return { type: "pie", labelCol, valueCol };
-  const firstLabel = String(rows[0][labelCol]).toLowerCase();
+  const firstLabel = labelCol === -1 ? "" : String(rows[0][labelCol]).toLowerCase();
   const isTimeSeries = /^\d{4}|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec/.test(firstLabel);
   return { type: isTimeSeries ? "line" : "bar", labelCol, valueCol };
 }
 
 function ResultChart({ columns, rows }: { columns: string[]; rows: any[][] }) {
-  const [view, setView] = useState<"chart" | "table">("chart");
   const { type, labelCol, valueCol } = detectChartType(columns, rows);
-  if (type === "none") return null;
+  const [view, setView] = useState<"chart" | "table">(type === "none" ? "table" : "chart");
 
-  const chartData = rows.map((row) => ({ name: String(row[labelCol]), value: Number(row[valueCol]) || 0 }));
-  const valueName = columns[valueCol] || "value";
+  const chartData = type === "none" ? [] : rows.map((row, i) => ({
+    name: labelCol === -1 ? `Row ${i + 1}` : String(row[labelCol]),
+    value: Number(row[valueCol]) || 0,
+  }));
+  const valueName = (valueCol === -1 ? undefined : columns[valueCol]) || "value";
   const renderPieLabel = (props: any) => `${props.name} (${(props.percent * 100).toFixed(0)}%)`;
 
   return (
@@ -283,7 +318,12 @@ function ResultChart({ columns, rows }: { columns: string[]; rows: any[][] }) {
           </button>
         ))}
       </div>
-      {view === "chart" && (
+      {view === "chart" && type === "none" && (
+        <div style={{ background: "var(--bg-tertiary)", borderRadius: "var(--radius)", padding: "24px", border: "1px solid var(--border)", textAlign: "center", fontSize: "13px", color: "var(--text-muted)" }}>
+          Chart not available for this result
+        </div>
+      )}
+      {view === "chart" && type !== "none" && (
         <div style={{ background: "var(--bg-tertiary)", borderRadius: "var(--radius)", padding: "16px", border: "1px solid var(--border)" }}>
           <ResponsiveContainer width="100%" height={280}>
             {type === "bar" ? (
